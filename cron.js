@@ -38,7 +38,7 @@ Return ONLY JSON:
   });
 
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw new Error(`OpenAI error: ${await response.text()}`);
   }
 
   const data = await response.json();
@@ -57,14 +57,31 @@ Return ONLY JSON:
   return String(result.title).slice(0, 100);
 }
 
+async function readJson(response) {
+  const text = await response.text();
+
+  if (!text.trim()) {
+    throw new Error(`Backend boş cevap verdi. HTTP ${response.status}`);
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Backend JSON yerine farklı cevap verdi. HTTP ${response.status}: ${text.slice(0, 500)}`
+    );
+  }
+}
+
 async function main() {
   const topic = await createTopic();
 
   console.log("Yeni otomatik konu:", topic);
-  console.log("Video üretimi başlıyor...");
+  console.log("Video üretimi başlatılıyor...");
 
-  const response = await fetch(
-    `${BACKEND_URL}/api/automation/test-production`,
+  // 1) Uzun üretim işini arka planda başlat
+  const startResponse = await fetch(
+    `${BACKEND_URL}/api/automation/test-start`,
     {
       method: "POST",
       headers: {
@@ -79,14 +96,56 @@ async function main() {
     }
   );
 
-  const result = await response.json();
+  const startResult = await readJson(startResponse);
 
-  if (!response.ok || !result.ok) {
-    throw new Error(JSON.stringify(result));
+  if (!startResponse.ok || !startResult.ok || !startResult.jobId) {
+    throw new Error(
+      `Üretim başlatılamadı: ${JSON.stringify(startResult)}`
+    );
   }
 
-  console.log("VIDEO TAMAMLANDI:", result);
-  console.log("YouTube URL:", result.url || "URL yok");
+  const jobId = startResult.jobId;
+
+  console.log("Job başladı:", jobId);
+
+  // 2) İş tamamlanana kadar takip et
+  const maxChecks = 90;
+
+  for (let i = 1; i <= maxChecks; i++) {
+    await new Promise(resolve => setTimeout(resolve, 30000));
+
+    console.log(`Üretim kontrolü ${i}/${maxChecks}...`);
+
+    const statusResponse = await fetch(
+      `${BACKEND_URL}/api/automation/test-status/${jobId}`
+    );
+
+    const statusResult = await readJson(statusResponse);
+
+    if (statusResult.status === "completed") {
+      console.log("================================");
+      console.log("VIDEO TAMAMLANDI");
+      console.log("Topic:", topic);
+      console.log("Video ID:", statusResult.result?.videoId || "");
+      console.log("YouTube URL:", statusResult.result?.url || "");
+      console.log("================================");
+
+      return;
+    }
+
+    if (statusResult.status === "failed") {
+      throw new Error(
+        `Video üretimi başarısız: ${
+          statusResult.error ||
+          JSON.stringify(statusResult)
+        }`
+      );
+    }
+
+    console.log("Üretim devam ediyor...");
+  }
+
+  throw new Error("Video üretimi 45 dakika içinde tamamlanmadı.");
 }
 
 main().catch(error => {
