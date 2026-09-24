@@ -32,6 +32,8 @@ Requirements:
 - suitable for a 1-minute AI-generated video
 - original
 - no copyrighted characters
+- suitable for AI-generated visuals
+- suitable for YouTube
 
 Return ONLY JSON:
 {"title":"..."}
@@ -42,54 +44,41 @@ Return ONLY JSON:
     }
   );
 
-  const text = await response.text();
-
   if (!response.ok) {
-    throw new Error(`OpenAI error: ${text}`);
+    const text = await response.text();
+    throw new Error(`OpenAI topic error: ${text}`);
   }
 
-  let data;
+  const data = await response.json();
+
+  const content = data?.choices?.[0]?.message?.content;
+
+  if (!content) {
+    throw new Error("OpenAI topic cevabı boş.");
+  }
+
+  let parsed;
 
   try {
-    data = JSON.parse(text);
+    parsed = JSON.parse(content);
   } catch {
-    throw new Error(
-      `OpenAI JSON hatası: ${text.slice(0, 500)}`
-    );
+    const match = content.match(/\{[\s\S]*\}/);
+
+    if (!match) {
+      throw new Error("OpenAI JSON cevabı okunamadı.");
+    }
+
+    parsed = JSON.parse(match[0]);
   }
 
-  const raw = String(
-    data.choices?.[0]?.message?.content || ""
-  )
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
-
-  let result;
-
-  try {
-    result = JSON.parse(raw);
-  } catch {
-    throw new Error(
-      `Konu JSON hatası: ${raw.slice(0, 500)}`
-    );
+  if (!parsed.title) {
+    throw new Error("Konu başlığı oluşturulamadı.");
   }
 
-  if (!result.title) {
-    throw new Error("Konu oluşturulamadı.");
-  }
-
-  return String(result.title).slice(0, 100);
+  return parsed.title;
 }
 
-async function main() {
-  const topic = await createTopic();
-
-  console.log("================================");
-  console.log("YENİ OTOMATİK KONU:");
-  console.log(topic);
-  console.log("================================");
-
+async function startProduction(topic) {
   const response = await fetch(
     `${BACKEND_URL}/api/automation/test-start`,
     {
@@ -106,33 +95,59 @@ async function main() {
     }
   );
 
-  const responseText = await response.text();
+  const text = await response.text();
 
-  let result;
+  if (!response.ok) {
+    throw new Error(
+      `Video üretimi başlatılamadı: ${text}`
+    );
+  }
+
+  let data;
 
   try {
-    result = JSON.parse(responseText);
+    data = JSON.parse(text);
   } catch {
     throw new Error(
-      `Backend JSON hatası. HTTP ${response.status}: ${responseText.slice(0, 500)}`
+      `Backend geçersiz cevap verdi: ${text}`
     );
   }
 
-  if (!response.ok || !result.ok || !result.jobId) {
+  if (!data.ok) {
     throw new Error(
-      `Üretim başlatılamadı: ${JSON.stringify(result)}`
+      data.error || "Backend üretimi başlatamadı."
     );
   }
 
-  console.log("================================");
-  console.log("VIDEO ÜRETİMİ BAŞLATILDI");
-  console.log("Job ID:", result.jobId);
-  console.log("Web Service üretimi arka planda sürdürecek.");
-  console.log("Cron bağlantısı kapatılıyor.");
-  console.log("================================");
+  return data;
 }
 
-main().catch(error => {
+async function main() {
+  console.log("=================================");
+  console.log("AI YouTube Factory Cron");
+  console.log("=================================");
+
+  console.log("Yeni otomatik konu oluşturuluyor...");
+
+  const topic = await createTopic();
+
+  console.log("Yeni otomatik konu:", topic);
+
+  console.log("Video üretimi Background Worker'a gönderiliyor...");
+
+  const result = await startProduction(topic);
+
+  console.log("Üretim kuyruğa başarıyla bırakıldı.");
+  console.log("Job ID:", result.jobId);
+  console.log("Status:", result.status);
+
+  console.log("Cron kapanıyor.");
+  console.log("Video üretimini forgeai-worker sürdürecek.");
+
+  process.exit(0);
+}
+
+main().catch((error) => {
   console.error("CRON ERROR:", error);
   process.exit(1);
 });
