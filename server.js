@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import OpenAI from "openai";
 import { google } from "googleapis";
 import ffmpegPath from "ffmpeg-static";
+import Redis from "ioredis";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -15,6 +16,9 @@ const PORT = Number(process.env.PORT || 8787);
 const DATA_DIR = path.resolve("data");
 const TOKEN_FILE = path.join(DATA_DIR, "youtube-token.json");
 const YOUTUBE_TOKEN_JSON = process.env.YOUTUBE_TOKEN_JSON || "";
+const REDIS_URL = process.env.REDIS_URL || "";
+const redis = REDIS_URL ? new Redis(REDIS_URL) : null;
+const JOB_QUEUE = "aiyt:video:queue";
 
 await fs.mkdir(DATA_DIR, { recursive: true });
 
@@ -602,67 +606,50 @@ Create 3 to 5 scenes.
 });
 
 // =========================
-// BACKGROUND AUTOMATION JOB
+// REDIS BACKGROUND AUTOMATION JOB
 // =========================
 
 app.post("/api/automation/test-start", async (req, res) => {
-  const jobId = crypto.randomUUID();
-
-  automationJobs.set(jobId, {
-    status: "running",
-    startedAt: new Date().toISOString(),
-    topic: req.body.topic || "Amazing facts about space"
-  });
-
-  setImmediate(async () => {
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:${PORT}/api/automation/test-production`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            topic: req.body.topic || "Amazing facts about space",
-            language: req.body.language || "English",
-            durationMinutes: Number(req.body.durationMinutes || 1),
-            quality: req.body.quality || "720p"
-          })
-        }
-      );
-
-      const data = await response.json();
-
-      automationJobs.set(jobId, {
-        status: data.status === "completed" ? "completed" : "failed",
-        result: data,
-        finishedAt: new Date().toISOString()
-      });
-    } catch (e) {
-      automationJobs.set(jobId, {
-        status: "failed",
-        error: e.message,
-        finishedAt: new Date().toISOString()
-      });
+  try {
+    if (!redis) {
+      return fail(res, 500, "REDIS_URL eksik. Render Key Value bağlantısı gerekli.");
     }
-  });
 
-  return ok(res, {
-    jobId,
-    status: "started",
-    message: "Video üretimi ve YouTube yüklemesi arka planda başlatıldı."
-  });
+    const jobId = crypto.randomUUID();
+    const job = {
+      jobId,
+      status: "queued",
+      startedAt: new Date().toISOString(),
+      topic: req.body.topic || "Amazing facts about space",
+      language: req.body.language || "English",
+      durationMinutes: Number(req.body.durationMinutes || 1),
+      quality: req.body.quality || "720p"
+    };
+
+    await redis.set(`aiyt:job:${jobId}`, JSON.stringify(job), "EX", 604800);
+    await redis.lpush(JOB_QUEUE, JSON.stringify(job));
+
+    return ok(res, {
+      jobId,
+      status: "queued",
+      message: "Video üretimi Background Worker kuyruğuna alındı."
+    });
+  } catch (e) {
+    return fail(res, 500, e.message);
+  }
 });
 
-app.get("/api/automation/test-status/:jobId", (req, res) => {
-  const job = automationJobs.get(req.params.jobId);
+app.get("/api/automation/test-status/:jobId", async (req, res) => {
+  try {
+    if (!redis) return fail(res, 500, "REDIS_URL eksik.");
 
-  if (!job) {
-    return fail(res, 404, "Üretim işi bulunamadı.");
+    const raw = await redis.get(`aiyt:job:${req.params.jobId}`);
+    if (!raw) return fail(res, 404, "Üretim işi bulunamadı.");
+
+    return ok(res, JSON.parse(raw));
+  } catch (e) {
+    return fail(res, 500, e.message);
   }
-
-  return ok(res, job);
 });
 
 // =========================
@@ -680,170 +667,30 @@ app.get("/api/automation/status", (_, res) => {
 
 
 // =========================
-// 5 VIDEO / DAY SCHEDULER
+// 5 VIDEO / DAY SCHEDULER STATUS
 // =========================
 
 const AUTOMATION_SCHEDULE = ["08:00", "11:00", "14:00", "17:00", "20:00"];
-let schedulerBusy = false;
-let schedulerLastRunKey = null;
-let schedulerLastJob = null;
 
 function istanbulClock() {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Europe/Istanbul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false
   }).formatToParts(new Date());
-
-  const get = (type) => parts.find(p => p.type === type)?.value || "";
-
+  const get = type => parts.find(p => p.type === type)?.value || "";
   return {
     date: `${get("year")}-${get("month")}-${get("day")}`,
     time: `${get("hour")}:${get("minute")}`
   };
 }
 
-async function createScheduledTopic() {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY eksik.");
-  }
-
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-  });
-
-  const prompt = `
-Choose ONE original English YouTube topic suitable for a global audience.
-It should be researchable, safe, and suitable for an AI-produced 1-minute video.
-Avoid copyrighted characters, reused stories, and claims of guaranteed virality.
-Return ONLY JSON:
-{"title":"..."}
-`;
-
-  const r = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{ role: "user", content: prompt }]
-  });
-
-  const raw = String(r.choices[0].message.content || "")
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
-
-  const data = JSON.parse(raw);
-
-  if (!data.title) {
-    throw new Error("AI otomatik konu oluşturamadı.");
-  }
-
-  return String(data.title).slice(0, 100);
-}
-
-async function runScheduledProduction(slot) {
-  if (schedulerBusy) return;
-
-  schedulerBusy = true;
-
-  try {
-    const topic = await createScheduledTopic();
-
-    const response = await fetch(
-      `http://127.0.0.1:${PORT}/api/automation/test-start`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          topic,
-          language: "English",
-          durationMinutes: 1,
-          quality: "720p"
-        })
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok || !data.jobId) {
-      throw new Error(data.error || "Otomatik üretim işi başlatılamadı.");
-    }
-
-    schedulerLastJob = {
-      slot,
-      topic,
-      jobId: data.jobId,
-      status: "running",
-      startedAt: new Date().toISOString()
-    };
-
-    // İş tamamlanana kadar arka planda takip et.
-    while (true) {
-      await new Promise(resolve => setTimeout(resolve, 30000));
-
-      const statusResponse = await fetch(
-        `http://127.0.0.1:${PORT}/api/automation/test-status/${data.jobId}`
-      );
-
-      const statusData = await statusResponse.json();
-
-      if (statusData.status === "completed") {
-        schedulerLastJob = {
-          ...schedulerLastJob,
-          status: "completed",
-          finishedAt: new Date().toISOString(),
-          result: statusData.result || null
-        };
-        break;
-      }
-
-      if (statusData.status === "failed") {
-        schedulerLastJob = {
-          ...schedulerLastJob,
-          status: "failed",
-          finishedAt: new Date().toISOString(),
-          error: statusData.error || "Otomatik üretim başarısız."
-        };
-        break;
-      }
-    }
-  } catch (e) {
-    schedulerLastJob = {
-      ...(schedulerLastJob || {}),
-      status: "failed",
-      finishedAt: new Date().toISOString(),
-      error: e.message
-    };
-  } finally {
-    schedulerBusy = false;
-  }
-}
-
-async function checkAutomationSchedule() {
-  if (schedulerBusy) return;
-
+app.get("/api/automation/scheduler-status", async (_, res) => {
   const clock = istanbulClock();
-
-  if (!AUTOMATION_SCHEDULE.includes(clock.time)) return;
-
-  const runKey = `${clock.date}_${clock.time}`;
-
-  if (schedulerLastRunKey === runKey) return;
-
-  schedulerLastRunKey = runKey;
-
-  runScheduledProduction(clock.time);
-}
-
-setInterval(checkAutomationSchedule, 30000);
-checkAutomationSchedule();
-
-app.get("/api/automation/scheduler-status", (_, res) => {
-  const clock = istanbulClock();
+  let queueLength = null;
+  if (redis) {
+    try { queueLength = await redis.llen(JOB_QUEUE); } catch {}
+  }
 
   return ok(res, {
     enabled: true,
@@ -851,8 +698,8 @@ app.get("/api/automation/scheduler-status", (_, res) => {
     videosPerDay: 5,
     schedule: AUTOMATION_SCHEDULE,
     currentTime: `${clock.date} ${clock.time}`,
-    busy: schedulerBusy,
-    lastJob: schedulerLastJob
+    mode: "cron+worker",
+    queueLength
   });
 });
 
