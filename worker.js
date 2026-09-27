@@ -60,7 +60,6 @@ async function updateJob(jobId, patch) {
 }
 
 async function generateSafeImage(client, visual, sceneNumber) {
-  // Promptu güvenlik filtrelerine takılmayacak şekilde soyut ve sembolik hale getirdik
   const primaryPrompt = `A purely abstract and symbolic cinematic visual. Theme: psychology and human mind. Dark, mysterious atmosphere, moody lighting, deep shadows, neo-noir. Strictly no violence, no sensitive topics, no human faces showing negative emotions. Safe for all audiences. Visual context: ${visual}`;
 
   try {
@@ -68,22 +67,17 @@ async function generateSafeImage(client, visual, sceneNumber) {
       model: "dall-e-3",
       prompt: primaryPrompt,
       size: "1024x1024",
-      quality: "standard",
-      response_format: "b64_json"
+      quality: "standard"
     });
   } catch (error) {
-    // Hatanın tam sebebini loga yazdırıyoruz
     console.warn(`[WORKER] Scene ${sceneNumber} ilk görsel engellendi. Sebep:`, error?.message);
-
     const fallbackPrompt = `A completely abstract, neutral, and safe dark background pattern for a psychology video. Deep shadows, cinematic lighting. No people, no specific objects.`;
-
     try {
       return await client.images.generate({
         model: "dall-e-3",
         prompt: fallbackPrompt,
         size: "1024x1024",
-        quality: "standard",
-        response_format: "b64_json"
+        quality: "standard"
       });
     } catch (fallbackError) {
       throw new Error(`Scene ${sceneNumber} görsel üretilemedi. OpenAI Hatası: ${fallbackError?.message}`);
@@ -92,7 +86,6 @@ async function generateSafeImage(client, visual, sceneNumber) {
 }
 
 async function createProduction(job) {
-  // EĞER KONU GİRİLMEZSE OTOMATİK OLARAK KARANLIK PSİKOLOJİ SEÇİLECEK
   const topic = String(job.topic || "Dark psychology facts and manipulating human behavior");
   const language = String(job.language || "English");
   const duration = Number(job.durationMinutes || 1);
@@ -101,7 +94,6 @@ async function createProduction(job) {
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   await updateJob(job.jobId, { status: "script", progress: 10 });
 
-  // DARK PSYCHOLOGY SENARYO KİLİDİ
   const scriptPrompt = `
 Create a short YouTube video script in ${language} about: "${topic}"
 Focus strongly on dark psychology, human behavior, body language, or psychological secrets.
@@ -136,7 +128,6 @@ Create strictly between 3 to 6 scenes.
     const scene = scriptData.scenes[i];
     await updateJob(job.jobId, { status: "assets", progress: 15 + Math.round((i / total) * 35), scene: i + 1, totalScenes: total });
 
-    // SESLENDİRME: 'onyx' SESİ DAHA DERİN VE GİZEMLİ BİR TON VERİR
     const speech = await client.audio.speech.create({
       model: "tts-1", voice: "onyx", input: String(scene.narration)
     });
@@ -146,11 +137,15 @@ Create strictly between 3 to 6 scenes.
     await fs.writeFile(audioPath, Buffer.from(await speech.arrayBuffer()));
 
     const image = await generateSafeImage(client, String(scene.visual || ""), i + 1);
-    if (!image?.data?.[0]?.b64_json) throw new Error(`Scene ${i + 1}: image data boş döndü.`);
+    if (!image?.data?.[0]?.url) throw new Error(`Scene ${i + 1}: image URL boş döndü.`);
 
     const imageFilename = `auto_image_${Date.now()}_${i}.png`;
     const imagePath = path.join(AUDIO_DIR, imageFilename);
-    await fs.writeFile(imagePath, Buffer.from(image.data[0].b64_json, "base64"));
+
+    const imageRes = await fetch(image.data[0].url);
+    const imageBuffer = await imageRes.arrayBuffer();
+    await fs.writeFile(imagePath, Buffer.from(imageBuffer));
+
     scenes.push({ imagePath, audioPath });
   }
 
