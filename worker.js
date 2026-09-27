@@ -9,26 +9,13 @@ import Redis from "ioredis";
 
 const REDIS_URL = process.env.REDIS_URL || "";
 
-if (!REDIS_URL) {
-  throw new Error("REDIS_URL eksik. Render Key Value bağlantısı gerekli.");
-}
-if (!process.env.OPENAI_API_KEY) {
-  throw new Error("OPENAI_API_KEY eksik.");
-}
-if (
-  !process.env.GOOGLE_CLIENT_ID ||
-  !process.env.GOOGLE_CLIENT_SECRET ||
-  !process.env.GOOGLE_REDIRECT_URI
-) {
-  throw new Error("Google OAuth env değişkenleri eksik.");
-}
-if (!process.env.YOUTUBE_TOKEN_JSON) {
-  throw new Error("YOUTUBE_TOKEN_JSON eksik. YouTube OAuth token'ını Worker'a ekleyin.");
-}
+if (!REDIS_URL) throw new Error("REDIS_URL eksik.");
+if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY eksik.");
+if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI) throw new Error("Google OAuth env değişkenleri eksik.");
+if (!process.env.YOUTUBE_TOKEN_JSON) throw new Error("YOUTUBE_TOKEN_JSON eksik.");
 
 const redis = new Redis(REDIS_URL);
 const queueRedis = redis.duplicate();
-
 const JOB_QUEUE = "aiyt:video:queue";
 
 const DATA_DIR = path.resolve("data");
@@ -43,40 +30,24 @@ await fs.mkdir(VIDEO_DIR, { recursive: true });
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const enhancedArgs = args.map((arg) => {
-      // HATA BURADAYDI: d=125 (5 saniye) animasyon sınırını kaldırdık.
-      // d=7500 (5 dakika) yaptık ki ses bitene kadar fotoğraf kesilmesin.
       if (arg.includes("scale=")) {
-        return arg.replace(
-          "scale=",
-          "zoompan=z='min(zoom+0.001,1.5)':d=7500,scale="
-        );
+        return arg.replace("scale=", "zoompan=z='min(zoom+0.001,1.5)':d=7500,scale=");
       }
       return arg;
     });
 
     const child = spawn(ffmpegPath, enhancedArgs);
     let stderr = "";
-
-    child.stderr.on("data", (c) => {
-      stderr += c.toString();
-    });
-
+    child.stderr.on("data", (c) => stderr += c.toString());
     child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(stderr.slice(-8000) || `FFmpeg exit code: ${code}`));
-      }
+      if (code === 0) resolve();
+      else reject(new Error(stderr.slice(-8000) || `FFmpeg exit code: ${code}`));
     });
   });
 }
 
 function youtubeClient() {
-  return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI
-  );
+  return new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
 }
 
 async function updateJob(jobId, patch) {
@@ -89,28 +60,25 @@ async function updateJob(jobId, patch) {
 }
 
 async function generateSafeImage(client, visual, sceneNumber) {
-  const primaryPrompt = `${visual}\nCreate a family-friendly educational visual for a general-audience YouTube video. 16:9 composition.`;
+  // DARK PSYCHOLOGY GÖRSEL STİL KİLİDİ
+  const primaryPrompt = `${visual}\nStyle: Dark cinematic, psychological thriller atmosphere, moody lighting, deep shadows, mysterious, neo-noir, highly detailed, photorealistic. 16:9 composition.`;
 
   try {
     return await client.images.generate({
-      model: "dall-e-3", // HATA DÜZELTİLDİ: Olmayan gpt-image-2 yerine geçerli model
+      model: "dall-e-3",
       prompt: primaryPrompt,
       size: "1024x1024",
       quality: "standard",
-      response_format: "b64_json" // EN BÜYÜK HATA BUYDU: API formatı düzeltildi
+      response_format: "b64_json"
     });
   } catch (error) {
     console.warn(`[WORKER] Scene ${sceneNumber} primary image rejected. Using safe fallback.`);
-
-    const fallbackPrompt = `A clean, abstract, non-human visual related to the video's educational topic. 16:9 composition.`;
+    // FALLBACK GÖRSEL STİLİ
+    const fallbackPrompt = `A clean, abstract, dark and mysterious non-human visual related to psychology and the human mind. Deep shadows, cinematic lighting, 16:9 composition.`;
 
     try {
       return await client.images.generate({
-        model: "dall-e-3",
-        prompt: fallbackPrompt,
-        size: "1024x1024",
-        quality: "standard",
-        response_format: "b64_json"
+        model: "dall-e-3", prompt: fallbackPrompt, size: "1024x1024", quality: "standard", response_format: "b64_json"
       });
     } catch (fallbackError) {
       throw new Error(`Scene ${sceneNumber} image generation failed.`);
@@ -119,19 +87,20 @@ async function generateSafeImage(client, visual, sceneNumber) {
 }
 
 async function createProduction(job) {
-  const topic = String(job.topic || "Amazing facts about space");
+  // EĞER KONU GİRİLMEZSE OTOMATİK OLARAK KARANLIK PSİKOLOJİ SEÇİLECEK
+  const topic = String(job.topic || "Dark psychology facts and manipulating human behavior");
   const language = String(job.language || "English");
   const duration = Number(job.durationMinutes || 1);
   const quality = String(job.quality || "720p");
 
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-  });
-
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   await updateJob(job.jobId, { status: "script", progress: 10 });
 
+  // DARK PSYCHOLOGY SENARYO KİLİDİ
   const scriptPrompt = `
 Create a short YouTube video script in ${language} about: "${topic}"
+Focus strongly on dark psychology, human behavior, body language, or psychological secrets.
+Tone: Mysterious, intriguing, and educational.
 Duration: approximately ${duration} minute.
 Return ONLY valid JSON format with max 8 scenes:
 {
@@ -150,30 +119,21 @@ Create strictly between 3 to 6 scenes.
     messages: [{ role: "user", content: scriptPrompt }]
   });
 
-  const rawScript = String(scriptResult.choices[0].message.content || "")
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
-
+  const rawScript = String(scriptResult.choices[0].message.content || "").replace(/```json/gi, "").replace(/```/g, "").trim();
   const scriptData = JSON.parse(rawScript);
 
-  if (!Array.isArray(scriptData.scenes) || !scriptData.scenes.length) {
-    throw new Error("AI sahne listesi oluşturamadı.");
-  }
+  if (!Array.isArray(scriptData.scenes) || !scriptData.scenes.length) throw new Error("AI sahne listesi oluşturamadı.");
 
   const scenes = [];
-  // GÜVENLİK KİLİDİ: Yapay zeka çıldırıp 50 sahne yazsa bile sistem en fazla 8 sahne işleyecek!
   const total = Math.min(scriptData.scenes.length, 8);
 
   for (let i = 0; i < total; i++) {
     const scene = scriptData.scenes[i];
-    const progress = 15 + Math.round((i / total) * 35);
-    await updateJob(job.jobId, { status: "assets", progress, scene: i + 1, totalScenes: total });
+    await updateJob(job.jobId, { status: "assets", progress: 15 + Math.round((i / total) * 35), scene: i + 1, totalScenes: total });
 
+    // SESLENDİRME: 'onyx' SESİ DAHA DERİN VE GİZEMLİ BİR TON VERİR
     const speech = await client.audio.speech.create({
-      model: "tts-1",
-      voice: "alloy",
-      input: String(scene.narration)
+      model: "tts-1", voice: "onyx", input: String(scene.narration)
     });
 
     const audioFilename = `auto_voice_${Date.now()}_${i}.mp3`;
@@ -181,20 +141,15 @@ Create strictly between 3 to 6 scenes.
     await fs.writeFile(audioPath, Buffer.from(await speech.arrayBuffer()));
 
     const image = await generateSafeImage(client, String(scene.visual || ""), i + 1);
-
-    if (!image?.data?.[0]?.b64_json) {
-      throw new Error(`Scene ${i + 1}: image data boş döndü.`);
-    }
+    if (!image?.data?.[0]?.b64_json) throw new Error(`Scene ${i + 1}: image data boş döndü.`);
 
     const imageFilename = `auto_image_${Date.now()}_${i}.png`;
     const imagePath = path.join(AUDIO_DIR, imageFilename);
     await fs.writeFile(imagePath, Buffer.from(image.data[0].b64_json, "base64"));
-
     scenes.push({ imagePath, audioPath });
   }
 
   await updateJob(job.jobId, { status: "rendering", progress: 55 });
-
   const tempFiles = [];
 
   try {
@@ -202,21 +157,11 @@ Create strictly between 3 to 6 scenes.
       const scene = scenes[i];
       const out = path.join(VIDEO_DIR, `auto_temp_${Date.now()}_${i}.mp4`);
       tempFiles.push(out);
-
       let scale = "1280:720";
-      if (quality === "1080p") scale = "1920:1080";
-      else if (quality === "4K") scale = "3840:2160";
+      if (quality === "1080p") scale = "1920:1080"; else if (quality === "4K") scale = "3840:2160";
 
-      await runFfmpeg([
-        "-y", "-loop", "1", "-i", scene.imagePath, "-i", scene.audioPath,
-        "-vf", `scale=${scale},format=yuv420p`,
-        "-c:v", "libx264", "-c:a", "aac", "-shortest", out
-      ]);
-
-      await updateJob(job.jobId, {
-        status: "rendering",
-        progress: 55 + Math.round(((i + 1) / scenes.length) * 25)
-      });
+      await runFfmpeg(["-y", "-loop", "1", "-i", scene.imagePath, "-i", scene.audioPath, "-vf", `scale=${scale},format=yuv420p`, "-c:v", "libx264", "-c:a", "aac", "-shortest", out]);
+      await updateJob(job.jobId, { status: "rendering", progress: 55 + Math.round(((i + 1) / scenes.length) * 25) });
     }
 
     const listFile = path.join(VIDEO_DIR, `auto_list_${Date.now()}.txt`);
@@ -224,36 +169,23 @@ Create strictly between 3 to 6 scenes.
     const finalPath = path.join(VIDEO_DIR, finalFile);
 
     await fs.writeFile(listFile, tempFiles.map((f) => `file '${f}'`).join("\n"));
-
-    await runFfmpeg([
-      "-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", finalPath
-    ]);
+    await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", finalPath]);
 
     await fs.unlink(listFile).catch(() => {});
     for (const f of tempFiles) await fs.unlink(f).catch(() => {});
 
     await updateJob(job.jobId, { status: "awaiting_approval", progress: 100, videoFile: finalFile });
 
-    // ŞİMDİLİK YOUTUBE YÜKLEMESİNİ KAPATTIK (ONAY SÜRECİ İÇİN)
-    /*
-    const oauth = youtubeClient();
-    oauth.setCredentials(token);
-    const youtube = google.youtube({ version: "v3", auth: oauth });
-    const title = topic.slice(0, 100);
-    const description = `AI YouTube Factory tarafından otomatik olarak oluşturuldu.\n\nTopic: ${topic}`;
-    const uploadResult = await youtube.videos.insert({...});
-    */
-
     return {
-      status: "awaiting_approval", // ONAY BEKLİYOR MODU
+      status: "awaiting_approval",
       progress: 100,
       topic,
       scenes: scenes.length,
       videoPath: `/api/video/${finalFile}`,
       videoId: "LOCAL_TEST",
-      url: "VİDEO BİLGİSAYARINA KAYDEDİLDİ, YÜKLENMEDİ.",
+      url: "VİDEO BİLGİSAYARINA KAYDEDİLDİ.",
       finishedAt: new Date().toISOString(),
-      message: "Otomatik üretim tamamlandı. Klasörü kontrol et."
+      message: "Dark Psychology videosu hazır."
     };
   } finally {
     for (const scene of scenes) {
@@ -265,33 +197,21 @@ Create strictly between 3 to 6 scenes.
 }
 
 async function processJob(job) {
-  await updateJob(job.jobId, {
-    status: "running",
-    startedAt: new Date().toISOString(),
-    worker: process.env.RENDER_SERVICE_NAME || "aiyt-worker"
-  });
-
+  await updateJob(job.jobId, { status: "running", startedAt: new Date().toISOString(), worker: process.env.RENDER_SERVICE_NAME || "aiyt-worker" });
   try {
     const result = await createProduction(job);
     await updateJob(job.jobId, result);
     console.log(`[WORKER] COMPLETED ${job.jobId} -> Video yerel klasörde hazır.`);
   } catch (error) {
-    await updateJob(job.jobId, {
-      status: "failed",
-      progress: 100,
-      error: error?.message || String(error),
-      finishedAt: new Date().toISOString()
-    });
+    await updateJob(job.jobId, { status: "failed", progress: 100, error: error?.message || String(error), finishedAt: new Date().toISOString() });
     console.error(`[WORKER] FAILED ${job.jobId}:`, error);
   }
 }
 
 let shuttingDown = false;
-
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log("[WORKER] Graceful shutdown...");
   await queueRedis.quit().catch(() => {});
   await redis.quit().catch(() => {});
   process.exit(0);
@@ -301,28 +221,16 @@ process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
 console.log("[WORKER] AI YouTube Factory worker started.");
-console.log("[WORKER] Queue:", JOB_QUEUE);
-
 while (!shuttingDown) {
   try {
     const item = await queueRedis.brpop(JOB_QUEUE, 10);
     if (!item) continue;
-
     const raw = item[1];
     let job;
-    try {
-      job = JSON.parse(raw);
-    } catch {
-      console.error("[WORKER] Geçersiz queue mesajı:", raw);
-      continue;
-    }
-
+    try { job = JSON.parse(raw); } catch { continue; }
     console.log(`[WORKER] JOB ${job.jobId} -> ${job.topic}`);
     await processJob(job);
   } catch (error) {
-    if (!shuttingDown) {
-      console.error("[WORKER] Queue error:", error?.message || error);
-      await new Promise((r) => setTimeout(r, 3000));
-    }
+    if (!shuttingDown) await new Promise((r) => setTimeout(r, 3000));
   }
 }
