@@ -60,24 +60,22 @@ async function updateJob(jobId, patch) {
 }
 
 async function generateSafeImage(client, visual, sceneNumber) {
-  const primaryPrompt = `A purely abstract and symbolic cinematic visual. Theme: psychology and human mind. Dark, mysterious atmosphere, moody lighting, deep shadows, neo-noir. Strictly no violence, no sensitive topics, no human faces showing negative emotions. Safe for all audiences. Visual context: ${visual}`;
+  const primaryPrompt = `A purely abstract and symbolic cinematic visual. Theme: psychology and human mind. Dark, mysterious atmosphere, moody lighting, deep shadows, neo-noir. Strictly no violence, no sensitive topics. Safe for all audiences. Visual context: ${visual}`;
 
   try {
     return await client.images.generate({
-      model: "dall-e-3",
+      model: "dall-e-2", // MODEL DALL-E 2 OLARAK DEĞİŞTİRİLDİ
       prompt: primaryPrompt,
-      size: "1024x1024",
-      quality: "standard"
+      size: "1024x1024"
     });
   } catch (error) {
     console.warn(`[WORKER] Scene ${sceneNumber} ilk görsel engellendi. Sebep:`, error?.message);
     const fallbackPrompt = `A completely abstract, neutral, and safe dark background pattern for a psychology video. Deep shadows, cinematic lighting. No people, no specific objects.`;
     try {
       return await client.images.generate({
-        model: "dall-e-3",
+        model: "dall-e-2", // MODEL DALL-E 2 OLARAK DEĞİŞTİRİLDİ
         prompt: fallbackPrompt,
-        size: "1024x1024",
-        quality: "standard"
+        size: "1024x1024"
       });
     } catch (fallbackError) {
       throw new Error(`Scene ${sceneNumber} görsel üretilemedi. OpenAI Hatası: ${fallbackError?.message}`);
