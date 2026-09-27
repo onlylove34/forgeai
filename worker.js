@@ -60,8 +60,8 @@ async function updateJob(jobId, patch) {
 }
 
 async function generateSafeImage(client, visual, sceneNumber) {
-  // DARK PSYCHOLOGY GÖRSEL STİL KİLİDİ
-  const primaryPrompt = `${visual}\nStyle: Dark cinematic, psychological thriller atmosphere, moody lighting, deep shadows, mysterious, neo-noir, highly detailed, photorealistic. 16:9 composition.`;
+  // Promptu güvenlik filtrelerine takılmayacak şekilde soyut ve sembolik hale getirdik
+  const primaryPrompt = `A purely abstract and symbolic cinematic visual. Theme: psychology and human mind. Dark, mysterious atmosphere, moody lighting, deep shadows, neo-noir. Strictly no violence, no sensitive topics, no human faces showing negative emotions. Safe for all audiences. Visual context: ${visual}`;
 
   try {
     return await client.images.generate({
@@ -72,16 +72,21 @@ async function generateSafeImage(client, visual, sceneNumber) {
       response_format: "b64_json"
     });
   } catch (error) {
-    console.warn(`[WORKER] Scene ${sceneNumber} primary image rejected. Using safe fallback.`);
-    // FALLBACK GÖRSEL STİLİ
-    const fallbackPrompt = `A clean, abstract, dark and mysterious non-human visual related to psychology and the human mind. Deep shadows, cinematic lighting, 16:9 composition.`;
+    // Hatanın tam sebebini loga yazdırıyoruz
+    console.warn(`[WORKER] Scene ${sceneNumber} ilk görsel engellendi. Sebep:`, error?.message);
+
+    const fallbackPrompt = `A completely abstract, neutral, and safe dark background pattern for a psychology video. Deep shadows, cinematic lighting. No people, no specific objects.`;
 
     try {
       return await client.images.generate({
-        model: "dall-e-3", prompt: fallbackPrompt, size: "1024x1024", quality: "standard", response_format: "b64_json"
+        model: "dall-e-3",
+        prompt: fallbackPrompt,
+        size: "1024x1024",
+        quality: "standard",
+        response_format: "b64_json"
       });
     } catch (fallbackError) {
-      throw new Error(`Scene ${sceneNumber} image generation failed.`);
+      throw new Error(`Scene ${sceneNumber} görsel üretilemedi. OpenAI Hatası: ${fallbackError?.message}`);
     }
   }
 }
