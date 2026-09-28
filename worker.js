@@ -76,12 +76,11 @@ async function createProduction(job) {
     const audioPath = path.join(AUDIO_DIR, `audio_${Date.now()}_${i}.mp3`);
     await fs.writeFile(audioPath, Buffer.from(await speech.arrayBuffer()));
 
-    // Görsel (Eğer hata verirse işlem DOĞRU BİR ŞEKİLDE iptal edilecek)
-   // Tamamen ücretsiz görsel üretimi (OpenAI bakiye istemez)
-const promptEncoded = encodeURIComponent(`Cinematic, dark psychology theme: ${scene.visual}. No text, no sensitive content.`);
+   // Güvenli ve doğrudan resim döndüren ücretsiz servis
+const cleanPrompt = encodeURIComponent((scene.visual || "dark cinematic scene").slice(0, 100));
 const image = {
     data: [{
-        url: `https://image.pollinations.ai/prompt/${promptEncoded}?width=1024&height=1024&nologo=true`
+        url: `https://picsum.photos/seed/${Math.floor(Math.random() * 10000)}/1024/1024`
     }]
 };
 
