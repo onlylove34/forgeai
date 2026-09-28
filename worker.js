@@ -77,11 +77,13 @@ async function createProduction(job) {
     await fs.writeFile(audioPath, Buffer.from(await speech.arrayBuffer()));
 
     // Görsel (Eğer hata verirse işlem DOĞRU BİR ŞEKİLDE iptal edilecek)
-    const image = await client.images.generate({
-      model: "dall-e-3",
-      prompt: `Cinematic, dark psychology theme: ${scene.visual}. No text, no sensitive content.`,
-      size: "1024x1024"
-    });
+   // Tamamen ücretsiz görsel üretimi (OpenAI bakiye istemez)
+const promptEncoded = encodeURIComponent(`Cinematic, dark psychology theme: ${scene.visual}. No text, no sensitive content.`);
+const image = {
+    data: [{
+        url: `https://image.pollinations.ai/prompt/${promptEncoded}?width=1024&height=1024&nologo=true`
+    }]
+};
 
     if (!image.data[0].url) throw new Error("OpenAI görsel URL'si döndürmedi.");
 
