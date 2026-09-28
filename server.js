@@ -63,6 +63,7 @@ app.get("/health", (_, res) => ok(res, {
 // =======================================================
 
 // 1. Android uygulamasının sunucu durumunu kontrol ettiği endpoint
+// 1. Android uygulamasının sunucu durumunu kontrol ettiği endpoint
 app.get("/api/system/status", async (_, res) => {
   let queueLength = 0;
   if (redis) {
@@ -73,6 +74,7 @@ app.get("/api/system/status", async (_, res) => {
     message: "Bulut Motoru Aktif (24/7 Otonom)",
     queueLength,
     channels: [
+      // ... alttaki kodlar aynı kalsın
       { id: "channel_1", name: "Dark Psychology", status: "24/7 Aktif" },
       { id: "channel_2", name: "Wealth Secrets", status: "24/7 Aktif" },
       { id: "channel_3", name: "AI Breakthroughs", status: "24/7 Aktif" }
